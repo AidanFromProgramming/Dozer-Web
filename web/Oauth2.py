@@ -1,5 +1,5 @@
 import os, json
-from flask import Flask, g, session, redirect, request, url_for, jsonify
+from flask import Flask, g, session, redirect, request, url_for, jsonify, make_response, render_template
 from requests_oauthlib import OAuth2Session
 
 with open("config.json", "r") as f:
@@ -13,9 +13,13 @@ API_BASE_URL = os.environ.get('API_BASE_URL', 'https://discordapp.com/api')
 AUTHORIZATION_BASE_URL = API_BASE_URL + '/oauth2/authorize'
 TOKEN_URL = API_BASE_URL + '/oauth2/token'
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=config['HTML_TEMPLATES'])
 app.debug = True
 app.config['SECRET_KEY'] = OAUTH2_CLIENT_SECRET
+
+base_url = "http://127.0.0.1:47670"
+
+token_transfer = []
 
 if 'http://' in OAUTH2_REDIRECT_URI:
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = 'true'
@@ -23,6 +27,10 @@ if 'http://' in OAUTH2_REDIRECT_URI:
 
 def token_updater(token):
     session['oauth2_token'] = token
+
+
+def local_redirect(address):
+    return base_url + address
 
 
 def make_session(token=None, state=None, scope=None):
@@ -41,18 +49,40 @@ def make_session(token=None, state=None, scope=None):
 
 
 @app.route('/')
-def index():
+def main():
+    print(session)
+    if "userInfo" in session:
+        print("User has previous session")
+        return redirect(local_redirect("/home"), 302)
+    else:
+        print("User does not have previous session")
+        return redirect(local_redirect("/link"), 302)
+
+
+@app.route('/home')
+def home():
+    try:
+        return render_template('home.html', user=session["userInfo"]["username"])
+    except KeyError:
+        print("User's previous session is invalid")
+        return redirect(local_redirect("/link"), 302)
+
+
+@app.route('/link')
+def link():
     scope = request.args.get(
         'scope',
         'identify guilds')
     discord = make_session(scope=scope.split(' '))
     authorization_url, state = discord.authorization_url(AUTHORIZATION_BASE_URL)
     session['oauth2_state'] = state
-    return redirect(authorization_url)
+    print(session)
+    return redirect(authorization_url, 302)
 
 
 @app.route('/callback')
 def callback():
+    global token_transfer
     if request.values.get('error'):
         return request.values['error']
     discord = make_session(state=session.get('oauth2_state'))
@@ -60,17 +90,22 @@ def callback():
         TOKEN_URL,
         client_secret=OAUTH2_CLIENT_SECRET,
         authorization_response=request.url)
-    session['oauth2_token'] = token
-    print("Redirect")
-    return redirect("http://localhost:47670/me", 302)
+    token_transfer = token
+    print(session)
+    return redirect(local_redirect("/me"), 302)
 
 
 @app.route('/me/')
 def me():
+    session['oauth2_token'] = token_transfer
     discord = make_session(token=session.get('oauth2_token'))
     user = discord.get(API_BASE_URL + '/users/@me').json()
     guilds = discord.get(API_BASE_URL + '/users/@me/guilds').json()
-    return jsonify(user=user, guilds=guilds)
+
+    session['userInfo'] = user
+    session['guildInfo'] = guilds
+
+    return redirect(local_redirect("/"), 302)
 
 
 if __name__ == '__main__':
